@@ -32,15 +32,21 @@ __all__ = ["build_multiblock"]
 def _wrap_loop(surface: BodySurface) -> np.ndarray:
     """Closed cross-section loop per station: (n_wrap, n_stream, 3).
 
-    Order: lower arc across the span (tip- -> tip+), then the upper arc back,
-    dropping the two shared tip nodes so the lens closes with no coincident
-    duplicates.  ``n_wrap = 2 * n_span - 2``.
+    Order: lower arc across the span (tip- -> tip+), then the upper arc back.
+    A **sharp** tip (upper==lower) is dropped to avoid a zero-length wrap edge;
+    a **blunt** tip is kept so its finite edge thickness is meshed.
     """
     lower = surface.lower                       # (n_span, n_stream, 3)
     upper = surface.upper
-    # lower[0 .. n-1] then upper[n-2 .. 1]; upper[0]==lower[0] and
-    # upper[-1]==lower[-1] are the coincident tips, so exclude them.
-    loop = np.concatenate([lower, upper[-2:0:-1]], axis=0)
+    n_span = lower.shape[0]
+    blunt0, blunt_last = (surface.meta or {}).get("blunt_tips", (False, False))
+
+    idx = list(range(n_span - 1, -1, -1))       # upper arc, tip+ -> tip-
+    if not blunt_last:
+        idx = idx[1:]                           # drop coincident upper[-1]
+    if not blunt0:
+        idx = idx[:-1]                          # drop coincident upper[0]
+    loop = np.concatenate([lower, upper[idx]], axis=0)
     return loop
 
 

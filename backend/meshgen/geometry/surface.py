@@ -64,9 +64,9 @@ class BodySurface:
         n_span = n_span or self.n_span
         n_stream = n_stream or self.n_stream
         verts, faces, normals = triangulate_structured(self.upper, self.lower)
-        upper, lower = regrid_to_lens(verts, faces, normals, n_span, n_stream)
+        upper, lower, rmeta = regrid_to_lens(verts, faces, normals, n_span, n_stream)
         return BodySurface(upper=upper, lower=lower, source=self.source,
-                           meta={**(self.meta or {}), "regridded": "lens"})
+                           meta={**(self.meta or {}), "regridded": "lens", **rmeta})
 
     @classmethod
     def from_waverider(cls, geom) -> "BodySurface":

@@ -61,23 +61,33 @@ def regrid_to_lens(
     normals: np.ndarray,
     n_span: int,
     n_stream: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    blunt_tol: float = 0.08,
+) -> tuple[np.ndarray, np.ndarray, dict]:
     """Body-fit constant-x lens cross-sections to a slender, z-single-valued body.
 
     For each streamwise station ``x`` the spanwise extent ``[y_min, y_max]`` is
     found from the projected triangulation and ``n_span`` nodes are laid across
-    it; upper/lower z come from barycentric sampling of the up/down-facing
-    triangles.  The two spanwise tips are forced coincident so each lens closes.
+    it.  The upper/lower z at each node are the **vertical envelope** -- the
+    highest and lowest surface directly above/below that ``(x, y)`` -- computed
+    over *all* triangles (no normal classification, which misfires near blunt or
+    vertical edges).
+
+    Spanwise tips are collapsed to a sharp edge only when the body is actually
+    sharp there; a **blunt** edge (finite thickness at the tip) is preserved.
+    ``blunt_tol`` is the tip-thickness fraction (of the max cross-section
+    thickness) above which an edge is treated as blunt.
+
+    Returns ``(upper, lower, meta)`` where ``meta['blunt_tips'] = (bool, bool)``
+    for the ``i=0`` and ``i=-1`` spanwise tips.
     """
     lo = vertices.min(axis=0)
     hi = vertices.max(axis=0)
     tri_pts = vertices[faces]
-    nz = normals[:, 2]
-    tris_up = tri_pts[nz > 1e-6]
-    tris_lo = tri_pts[nz < -1e-6]
     all_xy = tri_pts[:, :, :2]
+    az, bz, cz = tri_pts[:, 0, 2], tri_pts[:, 1, 2], tri_pts[:, 2, 2]
 
-    eps = 1e-4 * (hi[0] - lo[0])
+    xspan = hi[0] - lo[0]
+    eps = 1e-3 * xspan
     xs = np.linspace(lo[0] + eps, hi[0] - eps, n_stream)
     s = np.linspace(0.0, 1.0, n_span)
 
@@ -88,9 +98,11 @@ def regrid_to_lens(
         ymin, ymax = _y_extent_at_x(all_xy, x, lo[1], hi[1])
         if ymax - ymin < 1e-9:
             ymin, ymax = -eps, eps
-        ys = ymin + s * (ymax - ymin)
-        z_up = _sample_z_line(x, ys, tris_up, fill="max")
-        z_lo = _sample_z_line(x, ys, tris_lo, fill="min")
+        # Inset a hair so the tip nodes sit on the top/bottom faces (capturing
+        # blunt-edge thickness) rather than exactly on the vertical edge.
+        pad = 1e-3 * (ymax - ymin)
+        ys = (ymin + pad) + s * ((ymax - pad) - (ymin + pad))
+        z_up, z_lo = _envelope_z_line(x, ys, all_xy, az, bz, cz)
         upper[:, j, 0] = x
         upper[:, j, 1] = ys
         upper[:, j, 2] = z_up
@@ -98,19 +110,23 @@ def regrid_to_lens(
         lower[:, j, 1] = ys
         lower[:, j, 2] = z_lo
 
-    # Force the spanwise tips coincident so each lens closes to a sharp edge.
+    # Classify each spanwise tip as sharp or blunt from its thickness.
+    thick = upper[:, :, 2] - lower[:, :, 2]
+    max_thick = float(thick.max()) if thick.size else 0.0
+    blunt = []
     for tip in (0, -1):
-        mid = 0.5 * (upper[tip, :, :] + lower[tip, :, :])
-        upper[tip, :, :] = mid
-        lower[tip, :, :] = mid
-    # Do NOT collapse the nose station: keep it a small finite lens so the
-    # O-grid's first cross-plane has positive-volume cells (a fully coincident
-    # nose row produces a degenerate polar cap).
-    return upper, lower
+        tip_thick = float(np.median(thick[tip]))
+        is_blunt = max_thick > 1e-12 and tip_thick > blunt_tol * max_thick
+        blunt.append(is_blunt)
+        if not is_blunt:
+            mid = 0.5 * (upper[tip, :, :] + lower[tip, :, :])
+            upper[tip, :, :] = mid
+            lower[tip, :, :] = mid
+    return upper, lower, {"blunt_tips": (blunt[0], blunt[1])}
 
 
 def _y_extent_at_x(all_xy: np.ndarray, x: float, ylo: float, yhi: float) -> tuple[float, float]:
-    ys = np.linspace(ylo, yhi, 240)
+    ys = np.linspace(ylo, yhi, 400)
     inside = _points_in_any(np.full_like(ys, x), ys, all_xy)
     if not inside.any():
         return 0.0, 0.0
@@ -138,22 +154,35 @@ def _points_in_any(pxs: np.ndarray, pys: np.ndarray, tris_xy: np.ndarray) -> np.
     return out
 
 
-def _sample_z_line(x: float, ys: np.ndarray, tris: np.ndarray, fill: str) -> np.ndarray:
-    out = np.full(ys.shape, np.nan)
-    if tris.shape[0] == 0:
-        return np.zeros_like(ys)
-    az, bz, cz = tris[:, 0, 2], tris[:, 1, 2], tris[:, 2, 2]
-    tris_xy = tris[:, :, :2]
+def _envelope_z_line(
+    x: float, ys: np.ndarray, tris_xy: np.ndarray,
+    az: np.ndarray, bz: np.ndarray, cz: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vertical envelope at ``(x, y)`` for each y: (upper z, lower z).
+
+    Interpolates z on every triangle whose xy-projection contains the point and
+    returns the max (top surface) and min (bottom surface).  Using all triangles
+    -- rather than pre-classifying by normal -- makes this robust at blunt and
+    vertical edges, which is where the old min/max-per-class sampler spiked.
+    """
+    up = np.full(ys.shape, np.nan)
+    dn = np.full(ys.shape, np.nan)
     for i, py in enumerate(ys):
         l1, l2, l3 = _bary(x, py, tris_xy)
         inside = (l1 >= -1e-9) & (l2 >= -1e-9) & (l3 >= -1e-9)
         if np.any(inside):
             zc = (l1 * az + l2 * bz + l3 * cz)[inside]
-            out[i] = zc.max() if fill == "max" else zc.min()
-    if np.isnan(out).any():
-        good = ~np.isnan(out)
+            up[i] = zc.max()
+            dn[i] = zc.min()
+    up = _fill_gaps(up)
+    dn = _fill_gaps(dn)
+    return up, dn
+
+
+def _fill_gaps(v: np.ndarray) -> np.ndarray:
+    if np.isnan(v).any():
+        good = ~np.isnan(v)
         if good.any():
-            out = np.interp(np.arange(out.size), np.where(good)[0], out[good])
-        else:
-            out = np.zeros_like(ys)
-    return out
+            return np.interp(np.arange(v.size), np.where(good)[0], v[good])
+        return np.zeros_like(v)
+    return v

@@ -47,7 +47,7 @@ class StepModel:
         """Re-grid the tessellated wall into structured upper/lower patches."""
         from .regrid import regrid_to_lens
 
-        upper, lower = regrid_to_lens(
+        upper, lower, rmeta = regrid_to_lens(
             self.vertices, self.faces, self.normals, n_span, n_stream
         )
         return BodySurface(
@@ -58,6 +58,7 @@ class StepModel:
                 "path": self.path,
                 "reference_length": self.reference_length(),
                 "n_triangles": int(self.faces.shape[0]),
+                **rmeta,
             },
         )
 
