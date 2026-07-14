@@ -83,6 +83,19 @@ def regrid_to_lens(
     lo = vertices.min(axis=0)
     hi = vertices.max(axis=0)
     tri_pts = vertices[faces]
+
+    # Drop triangles whose xy-projection is (near-)degenerate: vertical/edge
+    # faces carry no reliable vertical-envelope information and, being slivers in
+    # projection, produce spurious spikes ("tents") in the sampled surface.
+    axy, bxy, cxy = tri_pts[:, 0, :2], tri_pts[:, 1, :2], tri_pts[:, 2, :2]
+    proj_area = 0.5 * np.abs(
+        (bxy[:, 0] - axy[:, 0]) * (cxy[:, 1] - axy[:, 1])
+        - (cxy[:, 0] - axy[:, 0]) * (bxy[:, 1] - axy[:, 1])
+    )
+    scale = (hi[0] - lo[0]) * (hi[1] - lo[1])
+    good = proj_area > 1e-7 * max(scale, 1e-12)
+    if good.any():
+        tri_pts = tri_pts[good]
     all_xy = tri_pts[:, :, :2]
     az, bz, cz = tri_pts[:, 0, 2], tri_pts[:, 1, 2], tri_pts[:, 2, 2]
 

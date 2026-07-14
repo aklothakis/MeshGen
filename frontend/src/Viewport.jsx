@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
 // Renders the geometry surface and/or the generated mesh in a Three.js scene.
-export default function Viewport({ geometry, mesh, showMode }) {
+export default function Viewport({ geometry, mesh, showMode, meshLayers }) {
   const mountRef = useRef(null)
   const stateRef = useRef({})
 
@@ -90,11 +90,16 @@ export default function Viewport({ geometry, mesh, showMode }) {
       bbox = addGeometry(root, geometry)
     }
     if (wantMesh) {
-      bbox = addMesh(root, mesh)
+      bbox = addMesh(root, mesh, meshLayers)
     }
 
-    if (bbox) frameCamera(camera, controls, bbox)
-  }, [geometry, mesh, showMode])
+    // Only reframe the camera when the data/mode changes, not on layer toggles.
+    const key = `${showMode}|${geometry ? 'g' : ''}|${mesh ? 'm' : ''}`
+    if (bbox && st.lastFrameKey !== key) {
+      frameCamera(camera, controls, bbox)
+      st.lastFrameKey = key
+    }
+  }, [geometry, mesh, showMode, meshLayers])
 
   return <div className="viewport" ref={mountRef} />
 }
@@ -130,36 +135,36 @@ function addGeometry(root, geometry) {
   return { min: geometry.bbox_min, max: geometry.bbox_max }
 }
 
-function addMesh(root, mesh) {
-  const wall = toBufferGeometry(mesh.positions, mesh.wall_indices)
-  root.add(new THREE.Mesh(wall, new THREE.MeshStandardMaterial({
-    color: '#2b4a86', metalness: 0.3, roughness: 0.5, side: THREE.DoubleSide,
-  })))
+function lineSet(positions, index, color, opacity, depthWrite = true) {
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  g.setIndex(index)
+  const m = new THREE.LineBasicMaterial({
+    color, transparent: opacity < 1, opacity, depthWrite,
+  })
+  return new THREE.LineSegments(g, m)
+}
 
+function addMesh(root, mesh, layers) {
+  const L = layers || { wall: true, cut: true, farfield: true }
+
+  // Solid body -- opaque so it reads clearly against the wireframe.
+  const wall = toBufferGeometry(mesh.positions, mesh.wall_indices)
+  const wallMesh = new THREE.Mesh(wall, new THREE.MeshStandardMaterial({
+    color: '#3a5a9a', metalness: 0.3, roughness: 0.5, side: THREE.DoubleSide,
+  }))
+  root.add(wallMesh)
   if (mesh.wall_lines?.length) {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3))
-    g.setIndex(mesh.wall_lines)
-    root.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: '#7fd0ff', transparent: true, opacity: 0.5,
-    })))
+    root.add(lineSet(mesh.positions, mesh.wall_lines, '#bfe0ff', 0.55))
   }
-  // Interior cross-section grids -- show the volume filling wall -> farfield.
-  if (mesh.slice_lines?.length) {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3))
-    g.setIndex(mesh.slice_lines)
-    root.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: '#37d0c0', transparent: true, opacity: 0.28,
-    })))
+
+  // Outer domain boundary -- dim, so the domain extent is outlined but recessed.
+  if (L.farfield && mesh.farfield_lines?.length) {
+    root.add(lineSet(mesh.positions, mesh.farfield_lines, '#54617e', 0.5, false))
   }
-  if (mesh.block_edges?.length) {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3))
-    g.setIndex(mesh.block_edges)
-    root.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: '#ff9d5c', transparent: true, opacity: 0.9,
-    })))
+  // Radial cut planes -- bright, reveal wall->farfield clustering (BL bunching).
+  if (L.cut && mesh.cut_lines?.length) {
+    root.add(lineSet(mesh.positions, mesh.cut_lines, '#37d0c0', 0.55, false))
   }
   return { min: mesh.bbox_min, max: mesh.bbox_max }
 }
@@ -170,7 +175,8 @@ function frameCamera(camera, controls, bbox) {
   const center = min.clone().add(max).multiplyScalar(0.5)
   const size = max.clone().sub(min).length() || 1
   controls.target.copy(center)
-  camera.position.copy(center).add(new THREE.Vector3(0.8, 0.5, 1.0).multiplyScalar(size * 0.9))
+  // Side-and-above 3/4 view: body length (x) reads across, cross-section visible.
+  camera.position.copy(center).add(new THREE.Vector3(1.35, 0.55, 0.95).multiplyScalar(size * 0.8))
   camera.near = size * 0.001
   camera.far = size * 50
   camera.updateProjectionMatrix()

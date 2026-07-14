@@ -65,13 +65,24 @@ def surface_payload(surface: BodySurface) -> dict:
     }
 
 
-def mesh_payload(mesh: MultiBlockMesh, max_lines: int = 60000) -> dict:
-    """Wall surface + block-edge / cross-section wireframe for the viewer."""
+def mesh_payload(mesh: MultiBlockMesh) -> dict:
+    """Legible volume-mesh wireframe for the viewer.
+
+    Returns separate, cleanly separable layers so the front-end can render a
+    readable picture instead of an overlapping cloud:
+
+    * ``wall_indices``  -- solid body surface
+    * ``wall_lines``    -- surface grid on the body
+    * ``farfield_lines``-- the outer domain boundary (rings + streamwise spars),
+      so the domain extent is clearly outlined
+    * ``cut_lines``     -- a few radial cut planes (wall -> farfield) that reveal
+      the interior clustering, including the near-wall boundary-layer bunching
+    """
     positions: list[float] = []
     wall_tri: list[int] = []
     wall_lines: list[int] = []
-    outer_lines: list[int] = []
-    slice_lines: list[int] = []       # interior cross-section grids (volume)
+    farfield_lines: list[int] = []
+    cut_lines: list[int] = []
 
     for block in mesh.blocks:
         c = block.coords
@@ -82,9 +93,9 @@ def mesh_payload(mesh: MultiBlockMesh, max_lines: int = 60000) -> dict:
         def idx(i, j, k):
             return base + (i * nj + j) * nk + k
 
-        # Wall (jmin) surface triangles + grid lines.
-        si = max(1, ni // 40)
-        sk = max(1, nk // 40)
+        # --- solid body (wall, j = 0) + a light surface grid ---
+        si = max(1, ni // 32)
+        sk = max(1, nk // 32)
         for i in range(ni - 1):
             for k in range(nk - 1):
                 a, b = idx(i, 0, k), idx(i + 1, 0, k)
@@ -97,35 +108,38 @@ def mesh_payload(mesh: MultiBlockMesh, max_lines: int = 60000) -> dict:
             for i in range(ni - 1):
                 wall_lines += [idx(i, 0, k), idx(i + 1, 0, k)]
 
-        # Interior volume cross-sections: full (wrap x wall-normal) grid at a few
-        # streamwise stations, so the mesh reads as a 3-D volume, not a surface.
-        sw = max(1, ni // 60)
-        sn = max(1, nj // 24)
-        k_slices = sorted(set([0, nk - 1] + [round(f * (nk - 1)) for f in (0.5,)]))
-        for k in k_slices:
-            for i in range(0, ni, sw):
-                for j in range(nj - 1):
-                    slice_lines += [idx(i, j, k), idx(i, j + 1, k)]
-            for j in range(0, nj, sn):
-                for i in range(ni - 1):
-                    slice_lines += [idx(i, j, k), idx(i + 1, j, k)]
+        # --- outer domain boundary (farfield, j = nj-1): rings + spars ---
+        jf = nj - 1
+        for k in range(0, nk, sk):                       # cross-section rings
+            for i in range(ni - 1):
+                farfield_lines += [idx(i, jf, k), idx(i + 1, jf, k)]
+        for i in range(0, ni, si):                       # streamwise spars
+            for k in range(nk - 1):
+                farfield_lines += [idx(i, jf, k), idx(i, jf, k + 1)]
 
-        # Block outline edges (the 12 edges of the logical box).
-        corners = [(0, 0, 0), (ni - 1, 0, 0), (ni - 1, nj - 1, 0), (0, nj - 1, 0),
-                   (0, 0, nk - 1), (ni - 1, 0, nk - 1), (ni - 1, nj - 1, nk - 1), (0, nj - 1, nk - 1)]
-        edges = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
-                 (0, 4), (1, 5), (2, 6), (3, 7)]
-        cidx = [idx(*cc) for cc in corners]
-        for a, b in edges:
-            outer_lines += [cidx[a], cidx[b]]
+        # --- radial cut planes at a few azimuths: wall -> farfield structure ---
+        # A handful of constant-wrap "fans" show the wall-normal clustering (the
+        # boundary layer bunches near j=0) along the whole body, without the
+        # dense every-cell soup.
+        n_fans = 6
+        fan_i = sorted(set(int(round(f * (ni - 1))) for f in
+                           [t / n_fans for t in range(n_fans + 1)]))
+        sk2 = max(1, nk // 24)
+        for i in fan_i:
+            for k in range(0, nk, sk2):                  # radial lines (show BL bunching)
+                for j in range(nj - 1):
+                    cut_lines += [idx(i, j, k), idx(i, j + 1, k)]
+            for j in range(0, nj, max(1, nj // 16)):     # streamwise lines on the fan
+                for k in range(nk - 1):
+                    cut_lines += [idx(i, j, k), idx(i, j, k + 1)]
 
     lo, hi = mesh.bounding_box()
     return {
         "positions": positions,
         "wall_indices": wall_tri,
         "wall_lines": wall_lines,
-        "slice_lines": slice_lines,
-        "block_edges": outer_lines,
+        "farfield_lines": farfield_lines,
+        "cut_lines": cut_lines,
         "bbox_min": lo.tolist(),
         "bbox_max": hi.tolist(),
     }

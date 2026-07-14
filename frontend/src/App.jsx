@@ -22,6 +22,8 @@ export default function App() {
   const [mesh, setMesh] = useState(null)
   const [quality, setQuality] = useState(null)
   const [viewMode, setViewMode] = useState('geometry')
+  const [meshLayers, setMeshLayers] = useState({ cut: true, farfield: true })
+  const toggleLayer = (k) => setMeshLayers((m) => ({ ...m, [k]: !m[k] }))
 
   const done = {
     geometry: !!geometry,
@@ -39,9 +41,11 @@ export default function App() {
     setViewMode('geometry')
   }, [])
 
+  const [firstCell, setFirstCell] = useState(null)
   const onMesh = useCallback((res) => {
     setMesh(res.mesh)
     setQuality(res.quality)
+    setFirstCell(res.first_cell_height ?? null)
     setViewMode('mesh')
   }, [])
 
@@ -107,7 +111,18 @@ export default function App() {
             </button>
           </div>
 
-          <Viewport geometry={geometry} mesh={mesh} showMode={viewMode} />
+          <Viewport geometry={geometry} mesh={mesh} showMode={viewMode} meshLayers={meshLayers} />
+
+          {viewMode === 'mesh' && mesh && (
+            <div className="layertoggle">
+              <button className={meshLayers.cut ? 'on' : ''} onClick={() => toggleLayer('cut')}>
+                Cut planes
+              </button>
+              <button className={meshLayers.farfield ? 'on' : ''} onClick={() => toggleLayer('farfield')}>
+                Domain outline
+              </button>
+            </div>
+          )}
 
           {!geometry && (
             <div className="emptyhint">Start by generating or importing geometry →</div>
@@ -116,9 +131,14 @@ export default function App() {
           {quality && viewMode === 'mesh' && (
             <div className="qualitycard">
               <div className="qhead">
-                Mesh quality {quality.valid
+                <span>Mesh quality {quality.valid
                   ? <span className="ok">● valid</span>
-                  : <span className="bad">● invalid</span>}
+                  : <span className="bad">● invalid</span>}</span>
+                {firstCell && (
+                  <span className="firstcell">
+                    1st cell ≈ {(firstCell * 1e6).toFixed(1)} µm · zoom to the wall to see the BL
+                  </span>
+                )}
               </div>
               <div className="qgrid">
                 <Stat label="Blocks" value={quality.n_blocks} />
