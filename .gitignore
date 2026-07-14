@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+dist/
+build/
+*.egg-info/
+.DS_Store
+# generated meshes / scratch
+*.su2
+*.cgns
+*.xyz
+scratch/
+frontend/dist/
