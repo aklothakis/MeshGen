@@ -41,7 +41,10 @@ def write_su2(mesh: MultiBlockMesh | UnstructuredMesh, path: str) -> str:
         for q in quads:
             lines.append(f"{_VTK_QUAD} " + " ".join(map(str, q.tolist())))
 
-    with open(path, "w") as f:
+    # newline="\n" forces LF endings on every platform; meshio's SU2 reader
+    # parses coordinates with numpy.fromfile(sep=" "), which fails on Windows
+    # CRLF ("\r") that text-mode writing would otherwise insert.
+    with open(path, "w", newline="\n") as f:
         f.write("\n".join(lines))
         f.write("\n")
     return path

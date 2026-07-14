@@ -22,7 +22,7 @@ def write_plot3d(mesh: MultiBlockMesh, path: str) -> str:
         for d in range(3):
             flat = c[..., d].ravel(order="F")
             lines.extend(f"{v:.10e}" for v in flat)
-    with open(path, "w") as f:
+    with open(path, "w", newline="\n") as f:
         f.write("\n".join(lines))
         f.write("\n")
     return path
