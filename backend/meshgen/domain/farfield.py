@@ -25,6 +25,9 @@ class DomainParams:
     growth_rate_cap: float = 1.25         # advisory near-wall growth cap
     n_stream_blocks: int = 2              # split streamwise into this many blocks
     n_wrap_blocks: int = 1                # split wrap direction into this many blocks
+    smoothing_iters: int = 0              # optional elliptic (Winslow) sweeps (0 = off;
+                                          # the wall-normal grid is already orthogonal)
+    smoothing_omega: float = 0.4          # smoothing under-relaxation factor
 
     def resolve_first_cell(
         self, flow: FlowConditions | None, body_length: float

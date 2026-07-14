@@ -126,7 +126,7 @@ def mesh(req: DomainRequest) -> dict:
         n_normal=req.n_normal, farfield_radius_factor=req.farfield_radius_factor,
         y_plus=req.y_plus, first_cell_height=req.first_cell_height,
         n_stream_blocks=req.n_stream_blocks, n_wrap_blocks=req.n_wrap_blocks,
-        n_wrap_mult=req.n_wrap_mult,
+        n_wrap_mult=req.n_wrap_mult, smoothing_iters=req.smoothing_iters,
     )
     try:
         mb = build_multiblock(surface, dom, flow)

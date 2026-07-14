@@ -31,6 +31,7 @@ class DomainRequest(BaseModel):
     n_stream_blocks: int = Field(2, ge=1, le=16)
     n_wrap_blocks: int = Field(2, ge=1, le=16)
     n_wrap_mult: int = Field(1, ge=1, le=8)
+    smoothing_iters: int = Field(0, ge=0, le=1000)
     use_flow: bool = True
     mach: float | None = None
     altitude_m: float = 30000.0

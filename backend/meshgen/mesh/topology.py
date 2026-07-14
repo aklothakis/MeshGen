@@ -86,44 +86,95 @@ def build_multiblock(
 
     n_normal = domain.n_normal
 
-    # Per-station cross-section centroid (in y-z), used as the radial origin.
-    coords = np.zeros((n_wrap, n_normal, n_stream, 3))
-
-    # Wall-normal normalised distribution, sized to the representative segment.
-    # (Recomputed per station to keep the first cell near-constant physically.)
+    # Precompute per-station extrusion data: centroid, radial + wall-normal
+    # directions, and the wall-normal clustering distribution.
+    stations = []
     for j in range(n_stream):
         ring = loop[:, j, :]                      # (n_wrap, 3)
         cy = ring[:, 1].mean()
         cz = ring[:, 2].mean()
-        cx = ring[:, 0]                           # keep station x per node
-        # Outward radial direction in the y-z plane from the centroid.
+        cx = ring[:, 0].copy()                    # keep station x per node
         dy = ring[:, 1] - cy
         dz = ring[:, 2] - cz
         rad = np.hypot(dy, dz)
         rad_safe = np.where(rad < 1e-12, 1e-12, rad)
-        uy = dy / rad_safe
+        uy = dy / rad_safe                        # centroid-radial direction
         uz = dz / rad_safe
-        # Degenerate station (leading edge): give a tiny outward fan so cells
-        # have positive volume instead of collapsing.
-        if np.all(rad < 1e-9):
+        if np.all(rad < 1e-9):                     # degenerate LE: radial fan
             ang = np.linspace(0.0, 2.0 * np.pi, n_wrap, endpoint=False)
-            uy = np.cos(ang)
-            uz = np.sin(ang)
-            rad = np.zeros(n_wrap)
+            uy, uz = np.cos(ang), np.sin(ang)
 
-        seg_len = R_far - rad                      # radial distance wall->farfield
-        seg_len = np.maximum(seg_len, 0.05 * R_far)
-        rep_len = float(np.median(seg_len))
-        s = _wall_normal_dist(n_normal, rep_len, first_cell)  # normalised [0,1]
+        oy = cy + R_far * uy                       # farfield circle points
+        oz = cz + R_far * uz
 
-        for m in range(n_normal):
-            t = s[m]
-            coords[:, m, j, 0] = cx
-            coords[:, m, j, 1] = cy + (rad + t * seg_len) * uy
-            coords[:, m, j, 2] = cz + (rad + t * seg_len) * uz
+        # Wall-normal direction (periodic tangent via roll, rotated 90 deg).
+        ty = 0.5 * (np.roll(ring[:, 1], -1) - np.roll(ring[:, 1], 1))
+        tz = 0.5 * (np.roll(ring[:, 2], -1) - np.roll(ring[:, 2], 1))
+        ny, nz = tz.copy(), -ty.copy()
+        flip = (ny * dy + nz * dz) < 0.0
+        ny[flip] *= -1.0
+        nz[flip] *= -1.0
+        nlen = np.hypot(ny, nz)
+        nlen = np.where(nlen < 1e-12, 1e-12, nlen)
+        ny /= nlen
+        nz /= nlen
+        if np.all(rad < 1e-9):
+            ny, nz = uy.copy(), uz.copy()
+
+        seg_len = np.maximum(np.hypot(oy - ring[:, 1], oz - ring[:, 2]), 0.05 * R_far)
+        s = _wall_normal_dist(n_normal, float(np.median(seg_len)), first_cell)
+        stations.append(dict(ring=ring, cx=cx, oy=oy, oz=oz,
+                             ny=ny, nz=nz, seg_len=seg_len, s=s))
+
+    def place(g: float) -> np.ndarray:
+        """Extrude with wall-normal weight ``g`` blended into radial-to-circle."""
+        coords = np.zeros((n_wrap, n_normal, n_stream, 3))
+        for j, st in enumerate(stations):
+            ring, s = st["ring"], st["s"]
+            ny, nz, seg = st["ny"], st["nz"], st["seg_len"]
+            oy, oz = st["oy"], st["oz"]
+            for m in range(n_normal):
+                t = s[m]
+                b = t ** 0.6                       # near wall -> normal, far -> circle
+                py_n = ring[:, 1] + g * t * seg * ny + (1 - g) * t * (oy - ring[:, 1])
+                pz_n = ring[:, 2] + g * t * seg * nz + (1 - g) * t * (oz - ring[:, 2])
+                py_r = ring[:, 1] + t * (oy - ring[:, 1])
+                pz_r = ring[:, 2] + t * (oz - ring[:, 2])
+                coords[:, m, j, 0] = st["cx"]
+                coords[:, m, j, 1] = (1.0 - b) * py_n + b * py_r
+                coords[:, m, j, 2] = (1.0 - b) * pz_n + b * pz_r
+        return coords
+
+    # Adaptive: use the most wall-normal (orthogonal) extrusion that stays valid.
+    from .block import _hex_cell_volumes
+
+    coords = None
+    used_g = 0.0
+    for g in (1.0, 0.85, 0.7, 0.55, 0.4, 0.25, 0.1, 0.0):
+        trial = place(g)
+        v = _hex_cell_volumes(trial)
+        if np.median(v) < 0:
+            trial = trial[::-1].copy()
+            v = _hex_cell_volumes(trial)
+        if (v > 0).all():
+            coords, used_g = trial, g
+            break
+    if coords is None:
+        coords = _orient_positive(place(0.0))     # radial fallback (always valid)
+
+    # Optional state-of-the-art refinement: elliptic (Winslow) smoothing.
+    if domain.smoothing_iters > 0:
+        from .elliptic import smooth_crossplanes
+
+        coords = smooth_crossplanes(
+            coords, first_cell,
+            n_iter=domain.smoothing_iters, omega=domain.smoothing_omega,
+        )
 
     coords = _orient_positive(coords)
-    return _split_blocks(coords, domain, surface)
+    mesh = _split_blocks(coords, domain, surface)
+    mesh.meta["wall_normal_weight"] = used_g
+    return mesh
 
 
 def _orient_positive(coords: np.ndarray) -> np.ndarray:

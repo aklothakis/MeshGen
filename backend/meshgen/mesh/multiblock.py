@@ -18,6 +18,7 @@ class MeshQuality:
     min_cell_volume: float
     n_negative_cells: int
     min_orthogonality_deg: float
+    mean_orthogonality_deg: float
     max_aspect_ratio: float
     max_expansion_ratio: float
 
@@ -32,6 +33,7 @@ class MeshQuality:
             "min_cell_volume": self.min_cell_volume,
             "n_negative_cells": self.n_negative_cells,
             "min_orthogonality_deg": self.min_orthogonality_deg,
+            "mean_orthogonality_deg": self.mean_orthogonality_deg,
             "max_aspect_ratio": self.max_aspect_ratio,
             "max_expansion_ratio": self.max_expansion_ratio,
             "valid": self.is_valid(),
@@ -68,14 +70,18 @@ class MultiBlockMesh:
         min_vol = np.inf
         n_neg = 0
         min_ortho = 180.0
+        ortho_sum = 0.0
+        ortho_n = 0
         max_ar = 0.0
         max_er = 0.0
         for b in self.blocks:
             vols = b.cell_volumes()
             min_vol = min(min_vol, float(vols.min()))
             n_neg += int((vols <= 0.0).sum())
-            o, ar, er = _block_quality(b.coords)
+            o, mean_o, cnt, ar, er = _block_quality(b.coords)
             min_ortho = min(min_ortho, o)
+            ortho_sum += mean_o * cnt
+            ortho_n += cnt
             max_ar = max(max_ar, ar)
             max_er = max(max_er, er)
         return MeshQuality(
@@ -85,13 +91,14 @@ class MultiBlockMesh:
             min_cell_volume=float(min_vol),
             n_negative_cells=int(n_neg),
             min_orthogonality_deg=float(min_ortho),
+            mean_orthogonality_deg=float(ortho_sum / max(ortho_n, 1)),
             max_aspect_ratio=float(max_ar),
             max_expansion_ratio=float(max_er),
         )
 
 
-def _block_quality(coords: np.ndarray) -> tuple[float, float, float]:
-    """Return ``(min_orthogonality_deg, max_aspect_ratio, max_expansion_ratio)``.
+def _block_quality(coords: np.ndarray):
+    """Return ``(min_ortho_deg, mean_ortho_deg, n_cells, max_AR, max_ER)``.
 
     Orthogonality is the minimum angle between the three grid-line directions
     at each node; aspect ratio and expansion ratio use edge lengths along each
@@ -137,4 +144,5 @@ def _block_quality(coords: np.ndarray) -> tuple[float, float, float]:
     ang = np.minimum(np.minimum(angle(ui, uj), angle(uj, uk)), angle(ui, uk))
     # 90 deg is perfect; report the worst deviation as an angle.
     min_ortho = float(90.0 - (90.0 - ang).max()) if ang.size else 90.0
-    return min_ortho, max_ar, max_er
+    mean_ortho = float(ang.mean()) if ang.size else 90.0
+    return min_ortho, mean_ortho, int(ang.size), max_ar, max_er
