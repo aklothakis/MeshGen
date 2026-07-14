@@ -45,7 +45,9 @@ class StepModel:
 
     def to_body_surface(self, n_span: int = 61, n_stream: int = 41) -> BodySurface:
         """Re-grid the tessellated wall into structured upper/lower patches."""
-        upper, lower = _regrid_structured(
+        from .regrid import regrid_to_lens
+
+        upper, lower = regrid_to_lens(
             self.vertices, self.faces, self.normals, n_span, n_stream
         )
         return BodySurface(
@@ -208,110 +210,3 @@ def _tri_normal(a, b, c) -> tuple[float, float, float]:
     nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
     mag = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
     return (nx / mag, ny / mag, nz / mag)
-
-
-def _regrid_structured(
-    vertices: np.ndarray,
-    faces: np.ndarray,
-    normals: np.ndarray,
-    n_span: int,
-    n_stream: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Body-fit a structured surface grid to a slender, z-single-valued body.
-
-    The body is swept from a nose to a base, so a bounding rectangle would
-    include off-body corners.  Instead, for each streamwise station ``x`` we
-    find the body's spanwise extent ``[y_min(x), y_max(x)]`` from the projected
-    triangulation and lay ``n_span`` nodes across it.  Upper/lower z come from
-    barycentric sampling of the up/down-facing triangles.
-    """
-    lo = vertices.min(axis=0)
-    hi = vertices.max(axis=0)
-    tri_pts = vertices[faces]                       # (n_f, 3, 3)
-    nz = normals[:, 2]
-    tris_up = tri_pts[nz > 1e-6]
-    tris_lo = tri_pts[nz < -1e-6]
-    all_xy = tri_pts[:, :, :2]
-
-    # Slight inward inset so stations sit on the body, not exactly on the tips.
-    eps = 1e-4 * (hi[0] - lo[0])
-    xs = np.linspace(lo[0] + eps, hi[0] - eps, n_stream)
-    s = np.linspace(0.0, 1.0, n_span)
-
-    upper = np.zeros((n_span, n_stream, 3))
-    lower = np.zeros((n_span, n_stream, 3))
-
-    for j, x in enumerate(xs):
-        ymin, ymax = _y_extent_at_x(all_xy, x, lo[1], hi[1])
-        if ymax - ymin < 1e-9:
-            ymin, ymax = -eps, eps
-        ys = ymin + s * (ymax - ymin)
-        z_up = _sample_z_line(x, ys, tris_up, fill="max")
-        z_lo = _sample_z_line(x, ys, tris_lo, fill="min")
-        upper[:, j, 0] = x
-        upper[:, j, 1] = ys
-        upper[:, j, 2] = z_up
-        lower[:, j, 0] = x
-        lower[:, j, 1] = ys
-        lower[:, j, 2] = z_lo
-
-    # Share the leading-edge row (nose station) between the two shells.
-    le = 0.5 * (upper[:, 0, :] + lower[:, 0, :])
-    upper[:, 0, :] = le
-    lower[:, 0, :] = le
-    return upper, lower
-
-
-def _y_extent_at_x(all_xy: np.ndarray, x: float, ylo: float, yhi: float) -> tuple[float, float]:
-    """Spanwise extent of the body at streamwise station ``x``.
-
-    Scans candidate y positions and keeps those whose ``(x, y)`` falls inside
-    some projected triangle.
-    """
-    ys = np.linspace(ylo, yhi, 200)
-    inside = np.array([_point_in_any(x, y, all_xy) for y in ys])
-    if not inside.any():
-        return 0.0, 0.0
-    idx = np.where(inside)[0]
-    return float(ys[idx[0]]), float(ys[idx[-1]])
-
-
-def _point_in_any(px: float, py: float, tris_xy: np.ndarray) -> bool:
-    ax, ay = tris_xy[:, 0, 0], tris_xy[:, 0, 1]
-    bx, by = tris_xy[:, 1, 0], tris_xy[:, 1, 1]
-    cx, cy = tris_xy[:, 2, 0], tris_xy[:, 2, 1]
-    det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
-    det = np.where(np.abs(det) < 1e-14, 1e-14, det)
-    l1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det
-    l2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det
-    l3 = 1.0 - l1 - l2
-    return bool(np.any((l1 >= -1e-9) & (l2 >= -1e-9) & (l3 >= -1e-9)))
-
-
-def _sample_z_line(x: float, ys: np.ndarray, tris: np.ndarray, fill: str) -> np.ndarray:
-    """Sample z at ``(x, y)`` for each y from a triangle set (xy projection)."""
-    out = np.full(ys.shape, np.nan)
-    if tris.shape[0] == 0:
-        return np.zeros_like(ys)
-    ax, ay = tris[:, 0, 0], tris[:, 0, 1]
-    bx, by = tris[:, 1, 0], tris[:, 1, 1]
-    cx, cy = tris[:, 2, 0], tris[:, 2, 1]
-    az, bz, cz = tris[:, 0, 2], tris[:, 1, 2], tris[:, 2, 2]
-    det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
-    det = np.where(np.abs(det) < 1e-14, 1e-14, det)
-    for i, py in enumerate(ys):
-        l1 = ((by - cy) * (x - cx) + (cx - bx) * (py - cy)) / det
-        l2 = ((cy - ay) * (x - cx) + (ax - cx) * (py - cy)) / det
-        l3 = 1.0 - l1 - l2
-        inside = (l1 >= -1e-9) & (l2 >= -1e-9) & (l3 >= -1e-9)
-        if np.any(inside):
-            zc = (l1 * az + l2 * bz + l3 * cz)[inside]
-            out[i] = zc.max() if fill == "max" else zc.min()
-    if np.isnan(out).any():
-        good = ~np.isnan(out)
-        if good.any():
-            out = np.interp(np.arange(out.size),
-                            np.where(good)[0], out[good])
-        else:
-            out = np.zeros_like(ys)
-    return out

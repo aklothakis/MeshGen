@@ -52,6 +52,22 @@ class BodySurface:
         lo, hi = self.bbox()
         return float(hi[0] - lo[0])
 
+    def to_lens(self, n_span: int | None = None, n_stream: int | None = None) -> "BodySurface":
+        """Return a copy re-gridded to constant-x lens cross-sections.
+
+        This canonical form (upper/lower meeting at the spanwise tips, one nose
+        station) is what the O-grid topology builder requires.  Applying it to
+        an already-lens surface simply resamples it.
+        """
+        from .regrid import triangulate_structured, regrid_to_lens
+
+        n_span = n_span or self.n_span
+        n_stream = n_stream or self.n_stream
+        verts, faces, normals = triangulate_structured(self.upper, self.lower)
+        upper, lower = regrid_to_lens(verts, faces, normals, n_span, n_stream)
+        return BodySurface(upper=upper, lower=lower, source=self.source,
+                           meta={**(self.meta or {}), "regridded": "lens"})
+
     @classmethod
     def from_waverider(cls, geom) -> "BodySurface":
         return cls(
